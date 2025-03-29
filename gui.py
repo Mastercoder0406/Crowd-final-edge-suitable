@@ -3,35 +3,43 @@ from tkinter import filedialog, ttk
 import cv2
 from PIL import Image, ImageTk
 import time
-import numpy as np
+import platform
+import logging
 from crowd_analysis import CrowdAnalyzer
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import platform
+import os
+
+# Disable oneDNN warnings
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("CrowdGUI")
 
 class CrowdAnalysisApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Crowd Analysis")
         
-        # Edge device detection
+        # Device detection
         self.is_edge_device = self.detect_edge_device()
         
         # Set window size based on device
         if self.is_edge_device:
-            self.root.geometry("800x600")  # Smaller for RPi
-            print("[EDGE] Running in Raspberry Pi optimized mode")
+            self.root.geometry("800x480")  # Smaller for RPi
+            logger.info("Running in Raspberry Pi optimized mode")
         else:
             self.root.geometry("1200x800")  # Original size
         
         # Variables
         self.source_type = tk.StringVar(value="video")
-        self.rtsp_url = tk.StringVar()
         self.file_path = tk.StringVar()
         self.running = False
         self.cap = None
         self.analyzer = CrowdAnalyzer(edge_mode=self.is_edge_device)
         self.frame_counter = 0
+        self.imgtk = None  # To prevent garbage collection
         
         # GUI Setup
         self.setup_ui()
@@ -48,38 +56,35 @@ class CrowdAnalysisApp:
 
     def setup_ui(self):
         """Setup the UI elements"""
+        # Control frame
         control_frame = ttk.Frame(self.root)
         control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
         
         # Device status
         device_status = "🟢 Edge Mode" if self.is_edge_device else "🔴 Desktop Mode"
-        ttk.Label(control_frame, text=device_status, 
-                 foreground="green" if self.is_edge_device else "red").grid(row=0, column=4, padx=10)
+        ttk.Label(control_frame, text=device_status,
+                 foreground="green" if self.is_edge_device else "red").grid(row=0, column=3, padx=10)
         
         # Source selection
         ttk.Label(control_frame, text="Source:").grid(row=0, column=0)
-        ttk.Radiobutton(control_frame, text="Video", variable=self.source_type, value="video").grid(row=0, column=1)
-        ttk.Radiobutton(control_frame, text="RTSP", variable=self.source_type, value="rtsp").grid(row=0, column=2)
+        ttk.Radiobutton(control_frame, text="Video File", variable=self.source_type, value="video").grid(row=0, column=1)
+        ttk.Radiobutton(control_frame, text="Camera", variable=self.source_type, value="camera").grid(row=0, column=2)
         
-        # RTSP URL input
-        ttk.Label(control_frame, text="RTSP URL:").grid(row=1, column=0)
-        ttk.Entry(control_frame, textvariable=self.rtsp_url, width=40).grid(row=1, column=1, columnspan=2)
+        # File browse
+        ttk.Button(control_frame, text="Browse", command=self.browse_file).grid(row=1, column=0)
+        ttk.Entry(control_frame, textvariable=self.file_path, width=40).grid(row=1, column=1, columnspan=2)
         
-        # File browse for videos
-        ttk.Button(control_frame, text="Browse", command=self.browse_file).grid(row=2, column=0)
-        ttk.Entry(control_frame, textvariable=self.file_path, width=40).grid(row=2, column=1, columnspan=2)
-        ttk.Button(control_frame, text="Show Results", command=self.show_results).grid(row=2, column=3)
+        # Control buttons
+        ttk.Button(control_frame, text="Start", command=self.start_analysis).grid(row=2, column=0, pady=5)
+        ttk.Button(control_frame, text="Stop", command=self.stop).grid(row=2, column=1)
+        ttk.Button(control_frame, text="Results", command=self.show_results).grid(row=2, column=2)
         
-        # Start/Stop buttons
-        ttk.Button(control_frame, text="Start", command=self.start_analysis).grid(row=3, column=0, pady=10)
-        ttk.Button(control_frame, text="Stop", command=self.stop).grid(row=3, column=1)
-
         # Video display
         self.video_frame = ttk.Frame(self.root)
         self.video_frame.pack(fill=tk.BOTH, expand=True)
         self.video_label = ttk.Label(self.video_frame)
         self.video_label.pack(fill=tk.BOTH, expand=True)
-
+        
         # People counter overlay
         self.count_label = ttk.Label(
             self.video_frame,
@@ -89,136 +94,115 @@ class CrowdAnalysisApp:
             background="black"
         )
         self.count_label.place(relx=0.95, rely=0.05, anchor=tk.NE)
-
-        # Results Section
-        self.results_label = ttk.Label(self.root, text="Results: -", font=("Arial", 12), foreground="blue")
-        self.results_label.pack(pady=10)
+        
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(self.root, textvariable=self.status_var,
+                 relief=tk.SUNKEN, anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
 
     def browse_file(self):
-        """Open file dialog to select a video file."""
+        """Open file dialog to select a video file"""
         filename = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.avi *.mov")])
         if filename:
             self.file_path.set(filename)
+            self.status_var.set(f"Selected: {filename.split('/')[-1]}")
 
     def start_analysis(self):
-        """Start processing video from file or RTSP."""
-        if self.source_type.get() == "rtsp":
-            source = self.rtsp_url.get()
-            if not source:
-                print("[ERROR] No RTSP URL provided!")
-                return
+        """Start processing video"""
+        if self.source_type.get() == "camera":
+            source = 0  # Default camera
         else:
             source = self.file_path.get()
             if not source:
-                print("[ERROR] No video file selected!")
+                self.status_var.set("Error: No video file selected!")
                 return
 
-        self.cap = cv2.VideoCapture(source)
-        if not self.cap.isOpened():
-            print(f"[ERROR] Could not open source: {source}")
-            return
-        
-        self.running = True
-        self.frame_counter = 0  # Reset counter
-        self.update_frame()
+        try:
+            self.cap = cv2.VideoCapture(source)
+            if not self.cap.isOpened():
+                raise ValueError("Could not open video source")
+                
+            self.running = True
+            self.frame_counter = 0
+            self.status_var.set("Running...")
+            self.update_frame()
+        except Exception as e:
+            self.status_var.set(f"Error: {str(e)}")
+            logger.error(f"Failed to start analysis: {e}")
 
     def update_frame(self):
-        """Read and process the next frame."""
+        """Process and display each frame"""
         if not self.running:
             return
-
-        # Edge optimization: Frame skipping
-        if self.is_edge_device:
-            self.frame_counter += 1
-            if self.frame_counter % 3 != 0:  # Process every 3rd frame
-                self.root.after(30, self.update_frame)
-                return
-
+            
         start_time = time.time()
+        
+        # Read frame
         ret, frame = self.cap.read()
         if not ret:
-            print("[INFO] End of video or stream error.")
             self.stop()
+            self.status_var.set("Finished processing video")
             return
-
-        # Edge optimization: Resolution reduction
+            
+        # Edge optimization: Reduce resolution
         if self.is_edge_device:
             frame = cv2.resize(frame, (640, 480))
-
+            
         # Process frame
         processed_frame, count, boxes, anomalies = self.analyzer.process_frame(frame)
-
-        # Store data
-        if not hasattr(self.analyzer, "people_counts"):
-            self.analyzer.people_counts = []
-            self.analyzer.anomalies_log = []
-            self.analyzer.processing_times = []
-
-        self.analyzer.people_counts.append(count)
-        self.analyzer.anomalies_log.append(len(anomalies))
-        self.analyzer.processing_times.append(round((time.time() - start_time) * 1000, 2))
-
-        # Draw bounding boxes
-        for x1, y1, x2, y2 in boxes:
+        
+        # Draw bounding boxes (green rectangles)
+        for (x1, y1, x2, y2) in boxes:
             cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        # Update UI
-        self.count_label.config(text=f"People: {count}")
-
-        # Resize for display
-        h, w = processed_frame.shape[:2]
-        max_width = self.video_frame.winfo_width()
-        max_height = self.video_frame.winfo_height()
-
-        if w > max_width or h > max_height:
-            scale = min(max_width/w, max_height/h)
-            processed_frame = cv2.resize(processed_frame, (int(w*scale), int(h*scale)))
-
-        # Convert to Tkinter format
-        img = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(img)
-        imgtk = ImageTk.PhotoImage(image=img)
-
-        self.video_label.imgtk = imgtk
-        self.video_label.config(image=imgtk)
-
-        # Update results text
-        processing_time = round((time.time() - start_time) * 1000, 2)
-        anomaly_text = "✔ No anomalies" if not anomalies else "⚠ Anomalies detected!"
-        results_text = (
-            f"🔹 People: {count} | "
-            f"🔹 Boxes: {len(boxes)} | "
-            f"🔹 {w}x{h} | "
-            f"🔹 {processing_time}ms | "
-            f"{anomaly_text}"
-        )
-        self.results_label.config(text=results_text)
-
+            
+        # Update display
+        self.update_display(processed_frame, count, start_time)
+        
         # Schedule next frame
         self.root.after(30, self.update_frame)
 
+    def update_display(self, frame, count, start_time):
+        """Update the GUI with processed frame"""
+        # Convert frame for display
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(img)
+        
+        # Update PhotoImage
+        if self.imgtk is None:
+            self.imgtk = ImageTk.PhotoImage(image=img)
+        else:
+            self.imgtk.paste(img)
+            
+        self.video_label.config(image=self.imgtk)
+        self.count_label.config(text=f"People: {count}")
+        
+        # Update status
+        fps = 1 / (time.time() - start_time) if (time.time() - start_time) > 0 else 0
+        self.status_var.set(
+            f"People: {count} | FPS: {fps:.1f} | "
+            f"Frame: {self.frame_counter} | "
+            f"{'Edge Mode' if self.is_edge_device else 'Desktop Mode'}"
+        )
+
     def stop(self):
-        """Stop video processing."""
+        """Stop analysis and cleanup"""
         self.running = False
         if self.cap:
             self.cap.release()
-        self.video_label.config(image="")
+        if hasattr(self, 'imgtk'):
+            self.video_label.config(image="")
+        self.status_var.set("Stopped")
+        self.analyzer.cleanup()
 
     def show_results(self):
-        """Display analysis results in new window."""
-        results_window = tk.Toplevel(self.root)
-        results_window.title("Analysis Results")
-        results_window.geometry("700x550")
-
-        ttk.Label(results_window, text="Crowd Analysis Summary", font=("Arial", 14, "bold")).pack(pady=10)
-
+        """Show analysis results"""
         if not hasattr(self.analyzer, "people_counts") or not self.analyzer.people_counts:
-            ttk.Label(results_window, text="No data available. Run analysis first!", foreground="red").pack(pady=20)
+            self.status_var.set("No data available. Run analysis first!")
             return
-
-        total_people = sum(self.analyzer.people_counts)
-        ttk.Label(results_window, text=f"📊 Total People Detected: {total_people}", 
-                 font=("Arial", 12, "bold"), foreground="blue").pack(pady=5)
+            
+        result_window = tk.Toplevel(self.root)
+        result_window.title("Analysis Results")
+        result_window.geometry("700x550")
 
         # Create plots
         fig, axs = plt.subplots(3, 1, figsize=(6, 8))
@@ -239,11 +223,10 @@ class CrowdAnalysisApp:
         axs[2].grid()
 
         # Embed plots
-        canvas = FigureCanvasTkAgg(fig, master=results_window)
+        canvas = FigureCanvasTkAgg(fig, master=result_window)
         canvas.draw()
         canvas.get_tk_widget().pack()
 
-# if __name__ == "__main__":
-#     root = tk.Tk()
-#     app = CrowdAnalysisApp(root)
-#     root.mainloop()
+    def __del__(self):
+        """Ensure cleanup"""
+        self.stop()
