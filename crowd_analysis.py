@@ -13,7 +13,15 @@ MAX_PEOPLE_THRESHOLD = 10  # Trigger alert if exceeded
 HEARTBEAT_INTERVAL = 30  # Seconds between normal updates
 
 class CrowdAnalyzer:
-    def __init__(self, model_path="models/ssd_mobilenet.tflite", server_url="http://localhost:5000/receive_data"):
+    def __init__(self, model_path="models/ssd_mobilenet.tflite", server_url="http://localhost:5000/receive_data",edge_mode=False):
+# for laptop test edge_mode=false 
+        """Initialize with edge_mode support"""
+        self.edge_mode = edge_mode  # Store edge mode flag
+        if self.edge_mode:
+            print("[EDGE] Running in edge-optimized mode")
+            # Edge-specific initializations can go here
+
+
         # Load model
         self.interpreter = tf.lite.Interpreter(model_path=model_path)
         self.interpreter.allocate_tensors()

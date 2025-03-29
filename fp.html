@@ -1,0 +1,155 @@
+DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crowd Monitoring Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow">
+            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                <h1 class="text-3xl font-bold text-gray-900">Crowd Monitoring Dashboard</h1>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 mb-8">
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Total People</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" id="totalPeople">0</dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Average Density</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" id="avgDensity">0</dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Active Locations</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" id="activeLocations">0</dd>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                <div class="bg-white shadow rounded-lg p-6">
+                    <h2 class="text-lg font-medium text-gray-900 mb-4">People Count Over Time</h2>
+                    <canvas id="peopleCountChart"></canvas>
+                </div>
+                <div class="bg-white shadow rounded-lg p-6">
+                    <h2 class="text-lg font-medium text-gray-900 mb-4">Density by Location</h2>
+                    <canvas id="densityChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Recent Events Table -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:p-6">
+                    <h2 class="text-lg font-medium text-gray-900 mb-4">Recent Events</h2>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead>
+                                <tr>
+                                    <th class="px-6 py-3 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                    <th class="px-6 py-3 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                                    <th class="px-6 py-3 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">People Count</th>
+                                    <th class="px-6 py-3 bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Density</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eventsTable" class="bg-white divide-y divide-gray-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Initialize charts
+        const peopleCountCtx = document.getElementById('peopleCountChart').getContext('2d');
+        const densityCtx = document.getElementById('densityChart').getContext('2d');
+
+        const peopleCountChart = new Chart(peopleCountCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'People Count',
+                    data: [],
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1
+                }]
+            }
+        });
+
+        const densityChart = new Chart(densityCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Density',
+                    data: [],
+                    backgroundColor: 'rgb(54, 162, 235)'
+                }]
+            }
+        });
+
+        // Fetch and update data
+        async function updateDashboard() {
+            const response = await fetch('/api/events');
+            const events = await response.json();
+
+            // Update stats
+            const totalPeople = events.reduce((sum, event) => sum + event.people_count, 0);
+            const avgDensity = (events.reduce((sum, event) => sum + event.density, 0) / events.length).toFixed(2);
+            const locations = new Set(events.map(event => event.location));
+
+            document.getElementById('totalPeople').textContent = totalPeople;
+            document.getElementById('avgDensity').textContent = avgDensity;
+            document.getElementById('activeLocations').textContent = locations.size;
+
+            // Update charts
+            peopleCountChart.data.labels = events.map(event => new Date(event.timestamp).toLocaleTimeString());
+            peopleCountChart.data.datasets[0].data = events.map(event => event.people_count);
+            peopleCountChart.update();
+
+            const densityData = Array.from(locations).map(location => {
+                const locationEvents = events.filter(event => event.location === location);
+                return {
+                    location,
+                    density: locationEvents.reduce((sum, event) => sum + event.density, 0) / locationEvents.length
+                };
+            });
+
+            densityChart.data.labels = densityData.map(d => d.location);
+            densityChart.data.datasets[0].data = densityData.map(d => d.density);
+            densityChart.update();
+
+            // Update table
+            const tableBody = document.getElementById('eventsTable');
+            tableBody.innerHTML = events.slice(0, 10).map(event => `
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(event.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${event.location}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${event.people_count}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${event.density.toFixed(2)}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Update dashboard every 5 seconds
+        updateDashboard();
+        setInterval(updateDashboard, 5000);
+    </script>
+</body>
+</html>
